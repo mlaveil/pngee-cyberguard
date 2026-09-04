@@ -1,6 +1,13 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { pool } from './postgres';
+import pg from 'pg';
+
+const { Pool } = pg;
+
+const migrationUrl = process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL;
+if (!migrationUrl) throw new Error('MIGRATION_DATABASE_URL or DATABASE_URL is required');
+
+const pool = new Pool({ connectionString: migrationUrl });
 
 async function main() {
   const migrationsDir = path.join(process.cwd(), 'server', 'db', 'migrations');
