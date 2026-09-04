@@ -3,7 +3,9 @@ const path = require('path');
 const pg = require('pg');
 
 async function main() {
-  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  const migrationUrl = process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL;
+  if (!migrationUrl) throw new Error('MIGRATION_DATABASE_URL or DATABASE_URL is required');
+  const pool = new pg.Pool({ connectionString: migrationUrl });
   try {
     await pool.query('CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
     const migrationDir = path.join('/app/server/db/migrations');
