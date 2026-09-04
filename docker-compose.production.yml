@@ -4,10 +4,13 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-pngee_cyberguard}
-      POSTGRES_USER: ${POSTGRES_USER:-pngee_app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-pngee_app}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD}
     volumes:
       - pngee_postgres:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 10s
@@ -26,7 +29,7 @@ services:
       APP_MODE: production
       DEPLOYMENT_MODE: on_prem
       PORT: 3000
-      DATABASE_URL: postgresql://${POSTGRES_USER:-pngee_app}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-pngee_cyberguard}
+      DATABASE_URL: postgresql://${POSTGRES_APP_USER:-pngee_app}:${POSTGRES_APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-pngee_cyberguard}
       STORAGE_LOCAL_PATH: /var/lib/pngee/storage
       JWT_ISSUER: ${JWT_ISSUER:-pngee-cyberguard}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-pngee-cyberguard-web}
