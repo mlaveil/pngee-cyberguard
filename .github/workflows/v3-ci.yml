@@ -18,12 +18,13 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run lint
       - run: npm run build
-      - name: Verify production runtime has no legacy in-memory API mount
+      - name: Verify production runtime is durable-only
         run: |
-          ! grep -q "routes/api" server.ts
-          ! grep -q "db/store" server.ts
+          ! grep -R -n --exclude-dir=node_modules --exclude='seed.ts' --exclude='store.ts' "db/store\|services/detectionEngine\|services/agentService\|services/testRunner\|services/disasterRecovery\|routes/api\|routes/agent" server.ts server
           grep -q "durablePlatformRouter" server.ts
           grep -q "durableApiRouter" server.ts
+          grep -q "durableAgentRouter" server.ts
+          grep -q "durableIngestRouter" server.ts
 
   postgres:
     runs-on: ubuntu-latest
