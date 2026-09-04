@@ -1,5 +1,12 @@
 import { Organization, User, Asset, SecurityEvent, DetectionRule, SecurityAlert, SecurityIncident, Vulnerability, SslCertificate, MonitoredDomain, BackupRecord, ExternalExposureRecord, IdentityAuthStat, AuditLog, ThreatIntelligenceIndicator, IntegrationConnector, SubscriptionPlanDetails, AgentEnrollmentToken, SecurityReport, SecurityPosture } from '../types';
 
+export interface LoginResult {
+  user: User;
+  accessToken?: string;
+  mfaRequired?: boolean;
+  mfaChallenge?: string;
+}
+
 let accessToken: string | null = sessionStorage.getItem('pngee_access_token');
 let currentOrgIdFilter = 'all';
 
@@ -38,7 +45,15 @@ async function request<T>(endpoint: string, options: RequestInit = {}, retry = t
 }
 
 export const api = {
-  login: async (email: string, password: string) => { const data = await request<{ user: User; accessToken: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }); setAccessToken(data.accessToken); return data; },
+  login: async (email: string, password: string): Promise<LoginResult> => {
+    const data = await request<LoginResult>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+    if (data.accessToken) setAccessToken(data.accessToken);
+    return data;
+  },
+  verifyMfa: (mfaChallenge: string, code?: string, recoveryCode?: string) => request<{ user: User; accessToken: string }>('/auth/mfa/verify', { method: 'POST', body: JSON.stringify({ mfaChallenge, code, recoveryCode }) }).then(data => { setAccessToken(data.accessToken); return data; }),
+  setupMfa: () => request<{ secret: string; otpauthUri: string; qrCodeDataUrl: string }>('/auth/mfa/setup', { method: 'POST' }),
+  enableMfa: (secret: string, code: string) => request<{ recoveryCodes: string[] }>('/auth/mfa/enable', { method: 'POST', body: JSON.stringify({ secret, code }) }),
+  disableMfa: (code: string) => request<{ success: boolean }>('/auth/mfa/disable', { method: 'POST', body: JSON.stringify({ code }) }),
   logout: async () => { try { await request<void>('/auth/logout', { method: 'POST' }, false); } finally { setAccessToken(null); } },
   refresh: refreshAccessToken,
   getMe: () => request<{ user: User; organization: Organization | null; availableOrgs: Organization[] }>('/auth/me'),
