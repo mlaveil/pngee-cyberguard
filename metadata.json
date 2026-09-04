@@ -1,0 +1,6 @@
+{
+  "name": "PNGee CyberGuard",
+  "description": "Commercial multi-tenant Managed Cybersecurity Platform by PNGee IT Solutions supporting Cloud and On-Premises deployments.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
