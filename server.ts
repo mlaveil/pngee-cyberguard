@@ -8,6 +8,7 @@ import { durableApiRouter } from './server/routes/durableApi';
 import { durableIngestRouter } from './server/routes/durableIngest';
 import { durableAgentRouter } from './server/routes/durableAgent';
 import { durableLicenseRouter } from './server/routes/durableLicense';
+import { licensedAssetCreationMiddleware } from './server/middleware/licenseEntitlement';
 import authRouter from './server/routes/auth';
 import { securityHeaders, apiRateLimit, rejectInsecureProductionRequests } from './server/middleware/security';
 import { healthCheck } from './server/db/postgres';
@@ -25,6 +26,7 @@ async function startServer(){
   app.use('/api/v1',durableAgentRouter);app.use('/api',durableAgentRouter);
   app.use('/api/v1',durableIngestRouter);app.use('/api',durableIngestRouter);
   app.use('/api/v1',durableLicenseRouter);app.use('/api',durableLicenseRouter);
+  app.post(['/api/v1/assets','/api/assets'],licensedAssetCreationMiddleware as any);
   // All customer/business APIs are now database-backed. The legacy in-memory API is intentionally not mounted.
   app.use('/api/v1',durablePlatformRouter);app.use('/api',durablePlatformRouter);
   app.use('/api/v1',durableApiRouter);app.use('/api',durableApiRouter);
