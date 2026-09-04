@@ -14,7 +14,8 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/server ./server
 COPY --from=build /app/src/types ./src/types
 COPY --from=build /app/server/db/migrations ./server/db/migrations
+COPY --from=build /app/docker-entrypoint.cjs ./docker-entrypoint.cjs
 RUN mkdir -p /var/lib/pngee/storage && chown -R node:node /app /var/lib/pngee
 USER node
 EXPOSE 3000
-CMD ["node", "dist/server.cjs"]
+CMD ["node", "docker-entrypoint.cjs"]
