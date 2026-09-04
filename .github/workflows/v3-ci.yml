@@ -26,13 +26,13 @@ jobs:
       postgres:
         image: postgres:17-alpine
         env:
-          POSTGRES_USER: pngee_app
-          POSTGRES_PASSWORD: ci-password
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-admin-password
           POSTGRES_DB: pngee_cyberguard
         ports:
           - 5432:5432
         options: >-
-          --health-cmd="pg_isready -U pngee_app -d pngee_cyberguard"
+          --health-cmd="pg_isready -U postgres -d pngee_cyberguard"
           --health-interval=5s --health-timeout=5s --health-retries=20
     steps:
       - uses: actions/checkout@v4
@@ -40,12 +40,20 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
+      - name: Create non-superuser application role
+        run: |
+          CONTAINER="$(docker ps --filter ancestor=postgres:17-alpine --format '{{.ID}}' | head -1)"
+          test -n "$CONTAINER"
+          docker exec "$CONTAINER" psql -U postgres -d pngee_cyberguard -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE pngee_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'ci-app-password';" \
+            -c "GRANT CONNECT ON DATABASE pngee_cyberguard TO pngee_app;" \
+            -c "GRANT USAGE, CREATE ON SCHEMA public TO pngee_app;"
       - run: npm run db:migrate
         env:
-          DATABASE_URL: postgresql://pngee_app:ci-password@127.0.0.1:5432/pngee_cyberguard
+          DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
       - run: npm run db:health
         env:
-          DATABASE_URL: postgresql://pngee_app:ci-password@127.0.0.1:5432/pngee_cyberguard
+          DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
       - run: npm run db:rls-test
         env:
-          DATABASE_URL: postgresql://pngee_app:ci-password@127.0.0.1:5432/pngee_cyberguard
+          DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
