@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pngee_cyberguard}
+      POSTGRES_USER: ${POSTGRES_USER:-pngee_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - pngee_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [pngee]
+
+  cyberguard:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      APP_MODE: production
+      DEPLOYMENT_MODE: on_prem
+      PORT: 3000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pngee_app}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-pngee_cyberguard}
+      STORAGE_LOCAL_PATH: /var/lib/pngee/storage
+      JWT_ISSUER: ${JWT_ISSUER:-pngee-cyberguard}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-pngee-cyberguard-web}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL_DAYS: ${JWT_REFRESH_TTL_DAYS:-30}
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    volumes:
+      - pngee_storage:/var/lib/pngee/storage
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks: [pngee]
+
+volumes:
+  pngee_postgres:
+  pngee_storage:
+
+networks:
+  pngee:
+    driver: bridge
