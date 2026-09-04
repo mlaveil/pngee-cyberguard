@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './server/routes/api';
+import { durableApiRouter } from './server/routes/durableApi';
 import authRouter from './server/routes/auth';
 import { agentRouter } from './server/routes/agent';
 import { AgentService } from './server/services/agentService';
@@ -32,10 +33,13 @@ async function startServer() {
     catch { res.status(503).json({ status: 'degraded', database: 'unhealthy', timestamp: new Date().toISOString() }); }
   });
 
-  // Authentication is intentionally mounted before the protected API router.
+  // Authentication is intentionally mounted before protected business APIs.
   app.use('/api/v1/auth', authRouter);
   app.use('/api/v1', agentRouter);
   app.use('/api', agentRouter);
+  // Durable PostgreSQL-backed routes take precedence over the legacy in-memory compatibility router.
+  app.use('/api/v1', durableApiRouter);
+  app.use('/api', durableApiRouter);
   app.use('/api/v1', apiRouter);
   app.use('/api', apiRouter);
 
