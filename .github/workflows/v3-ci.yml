@@ -40,17 +40,30 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
-      - name: Create non-superuser application role
+      - name: Create migration and application roles
         run: |
           CONTAINER="$(docker ps --filter ancestor=postgres:17-alpine --format '{{.ID}}' | head -1)"
           test -n "$CONTAINER"
           docker exec "$CONTAINER" psql -U postgres -d pngee_cyberguard -v ON_ERROR_STOP=1 \
-            -c "CREATE ROLE pngee_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'ci-app-password';" \
-            -c "GRANT CONNECT ON DATABASE pngee_cyberguard TO pngee_app;" \
-            -c "GRANT USAGE, CREATE ON SCHEMA public TO pngee_app;"
-      - run: npm run db:migrate
+            -c "CREATE ROLE pngee_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD 'ci-migrator-password';" \
+            -c "CREATE ROLE pngee_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS PASSWORD 'ci-app-password';" \
+            -c "GRANT CONNECT ON DATABASE pngee_cyberguard TO pngee_migrator, pngee_app;" \
+            -c "GRANT USAGE, CREATE ON SCHEMA public TO pngee_migrator;" \
+            -c "GRANT USAGE ON SCHEMA public TO pngee_app;"
+      - name: Run database migrations
+        run: npm run db:migrate
         env:
-          DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
+          MIGRATION_DATABASE_URL: postgresql://pngee_migrator:ci-migrator-password@127.0.0.1:5432/pngee_cyberguard
+      - name: Grant application database privileges
+        run: |
+          CONTAINER="$(docker ps --filter ancestor=postgres:17-alpine --format '{{.ID}}' | head -1)"
+          docker exec "$CONTAINER" psql -U postgres -d pngee_cyberguard -v ON_ERROR_STOP=1 \
+            -c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO pngee_app;" \
+            -c "GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO pngee_app;"
+      - name: Verify application role is not privileged
+        run: |
+          CONTAINER="$(docker ps --filter ancestor=postgres:17-alpine --format '{{.ID}}' | head -1)"
+          docker exec "$CONTAINER" psql -U postgres -d pngee_cyberguard -tAc "SELECT rolname || ':' || rolsuper || ':' || rolbypassrls FROM pg_roles WHERE rolname = 'pngee_app'" | grep -Fx 'pngee_app:f:f'
       - run: npm run db:health
         env:
           DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
