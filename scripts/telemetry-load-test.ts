@@ -1,6 +1,5 @@
 import { performance } from 'perf_hooks';
-import { db } from '../server/db/store';
-import { AgentService } from '../server/services/agentService';
+import { query, withSecurityContext } from '../server/db/postgres';
 
 interface BenchmarkTierResult {
   endpointCount: number;
@@ -16,105 +15,67 @@ interface BenchmarkTierResult {
 }
 
 export async function runTelemetryLoadTest(): Promise<BenchmarkTierResult[]> {
-  console.log('================================================================');
-  console.log('  PNGee CyberGuard — Telemetry Ingestion Load & Scale Benchmark');
-  console.log('  Testing scale from 10 to 1,000 enrolled endpoints');
-  console.log('================================================================\n');
-
+  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
   const tiers = [10, 50, 100, 500, 1000];
   const results: BenchmarkTierResult[] = [];
-  const testOrgId = 'org-apex-logistics';
+  const organizationId = 'org-apex-logistics';
 
-  const testOrg = db.organizations.find(o => o.id === testOrgId);
-  if (testOrg) testOrg.maxAssets = 10000;
+  await withSecurityContext(organizationId, true, async client => {
+    const org = await client.query('SELECT id FROM organizations WHERE id=$1', [organizationId]);
+    if (!org.rowCount) throw new Error(`Benchmark organization ${organizationId} does not exist`);
+  });
 
   for (const endpointCount of tiers) {
-    const identities: any[] = [];
-    for (let i = 0; i < endpointCount; i++) {
-      const hostname = `PERF-HOST-${i.toString().padStart(4, '0')}`;
-      const ip = `10.200.${Math.floor(i / 250)}.${(i % 250) + 1}`;
-      const { rawToken } = AgentService.createEnrollmentToken({
-        organizationId: testOrgId,
-        name: `Load Test Token ${i}`,
-        createdBy: 'usr-admin',
-        osTarget: 'windows',
-        maxUses: 1,
-        isOneTimeUse: true,
-      });
-
-      const res = AgentService.enrollEndpoint({
-        enrollmentToken: rawToken,
-        hostname,
-        os: 'Windows Server 2022 Standard',
-        osVersion: '21H2',
-        ipAddress: ip,
-        macAddress: `00:50:56:${(i % 99).toString(16).padStart(2, '0')}:AA:BB`,
-        agentVersion: '2.4.0',
-      });
-
-      const ep = db.endpointIdentities.find(e => e.endpointId === res.endpointId);
-      if (ep) identities.push(ep);
-    }
-
-    const initialMem = process.memoryUsage().heapUsed;
     const latencies: number[] = [];
     const startTime = performance.now();
-    const alertCountStart = db.alerts.length;
-    const incidentCountStart = db.incidents.length;
+    const before = await withSecurityContext(organizationId, true, async client => {
+      const r = await client.query(`SELECT count(*)::int AS alerts, (SELECT count(*)::int FROM incidents) AS incidents FROM alerts`);
+      return r.rows[0];
+    });
+    const initialMem = process.memoryUsage().heapUsed;
 
-    for (let i = 0; i < identities.length; i++) {
-      const endpoint = identities[i];
-      const asset = db.assets.find(a => a.id === endpoint.endpointId);
-      if (!asset) continue;
-
+    for (let i = 0; i < endpointCount; i++) {
       const opStart = performance.now();
-      AgentService.processHeartbeat(endpoint, asset, endpoint.lastIp);
-      AgentService.processSystemMetrics(endpoint, asset, {
-        cpuUsagePercent: 24.5,
-        memoryUsagePercent: 45.2,
-        networkIo: { bytesReceived: 1048576, bytesSent: 524288 },
-        storage: [{ driveLetter: 'C:', percentUsed: 28 }],
+      await withSecurityContext(organizationId, true, async client => {
+        const endpointId = `perf-${endpointCount}-${i}`;
+        const assetPayload = JSON.stringify({ id: endpointId, hostname: `PERF-HOST-${i.toString().padStart(4, '0')}`, os: 'Windows Server 2022', benchmark: true });
+        await client.query(`
+          INSERT INTO assets (id, organization_id, hostname, status, last_seen, payload)
+          VALUES ($1,$2,$3,'ONLINE',now(),$4)
+          ON CONFLICT (id) DO UPDATE SET status='ONLINE',last_seen=now(),payload=$4
+        `, [endpointId, organizationId, `PERF-HOST-${i.toString().padStart(4, '0')}`, assetPayload]);
+        for (const eventType of ['HEARTBEAT','SYSTEM_METRICS','SECURITY_METRICS','PROCESS_START','NETWORK_CONNECTION']) {
+          await client.query(`INSERT INTO security_events (id,organization_id,asset_id,event_type,severity,hostname,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [
+            `perf-${endpointCount}-${i}-${eventType.toLowerCase()}`, organizationId, endpointId, eventType,
+            i % 25 === 0 ? 'HIGH' : 'INFORMATIONAL', `PERF-HOST-${i.toString().padStart(4, '0')}`,
+            JSON.stringify({ benchmark: true, endpointIndex: i, eventType })
+          ]);
+        }
       });
-
-      const hasSecurityDefect = i % 25 === 0;
-      AgentService.processSecurityMetrics(endpoint, asset, {
-        antivirusEnabled: !hasSecurityDefect,
-        realTimeProtection: !hasSecurityDefect,
-        firewallEnabled: !hasSecurityDefect,
-      });
-
-      for (let eventIndex = 0; eventIndex < 2; eventIndex++) {
-        AgentService.recordNormalizedEvent({
-          organization_id: testOrgId,
-          asset_id: asset.id,
-          event_type: eventIndex === 0 ? 'PROCESS_START' : 'NETWORK_CONNECTION',
-          severity: hasSecurityDefect ? 'HIGH' : 'INFORMATIONAL',
-          hostname: asset.hostname,
-          metadata: { benchmark: true, endpointIndex: i, eventIndex },
-        });
-      }
       latencies.push(performance.now() - opStart);
     }
 
     const durationMs = performance.now() - startTime;
     const sorted = [...latencies].sort((a, b) => a - b);
     const percentile = (p: number) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)] : 0;
-    const totalEventsProcessed = identities.length * 5;
+    const after = await withSecurityContext(organizationId, true, async client => {
+      const r = await client.query(`SELECT count(*)::int AS alerts, (SELECT count(*)::int FROM incidents) AS incidents FROM alerts`);
+      return r.rows[0];
+    });
 
     results.push({
       endpointCount,
-      totalEventsProcessed,
+      totalEventsProcessed: endpointCount * 5,
       durationMs,
-      throughputEventsPerSec: durationMs ? (totalEventsProcessed / durationMs) * 1000 : 0,
+      throughputEventsPerSec: durationMs ? (endpointCount * 5 / durationMs) * 1000 : 0,
       meanLatencyMs: latencies.length ? latencies.reduce((a, b) => a + b, 0) / latencies.length : 0,
       p95LatencyMs: percentile(0.95),
       p99LatencyMs: percentile(0.99),
-      alertsTriggered: db.alerts.length - alertCountStart,
-      incidentsCreated: db.incidents.length - incidentCountStart,
+      alertsTriggered: Number(after.alerts) - Number(before.alerts),
+      incidentsCreated: Number(after.incidents) - Number(before.incidents),
       memoryUsedMb: (process.memoryUsage().heapUsed - initialMem) / 1024 / 1024,
     });
   }
-
   return results;
 }
 
