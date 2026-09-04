@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, Organization } from '../types';
-import { api, setApiAuthContext } from '../services/api';
+import { api, LoginResult, setApiAuthContext } from '../services/api';
 
 interface AuthContextType {
   currentUser: User | null;
@@ -8,7 +8,8 @@ interface AuthContextType {
   availableOrgs: Organization[];
   allDemoUsers: User[];
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  verifyMfa: (mfaChallenge: string, code?: string, recoveryCode?: string) => Promise<{ user: User; accessToken: string }>;
   logout: () => Promise<void>;
   switchUser: (userId: string) => Promise<void>;
   refreshAuth: () => Promise<void>;
@@ -39,10 +40,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => { refreshAuth(); }, []);
 
-  const login = async (email: string, password: string) => {
+  const login = async (email: string, password: string): Promise<LoginResult> => {
     setIsLoading(true);
-    try { const data = await api.login(email, password); applyAuth(data.user, null); const me = await api.getMe(); applyAuth(me.user, me.organization, me.availableOrgs || []); }
-    finally { setIsLoading(false); }
+    try {
+      const data = await api.login(email, password);
+      if (data.accessToken) {
+        const me = await api.getMe();
+        applyAuth(me.user, me.organization, me.availableOrgs || []);
+      }
+      return data;
+    } finally { setIsLoading(false); }
+  };
+
+  const verifyMfa = async (mfaChallenge: string, code?: string, recoveryCode?: string) => {
+    const data = await api.verifyMfa(mfaChallenge, code, recoveryCode);
+    const me = await api.getMe();
+    applyAuth(me.user, me.organization, me.availableOrgs || []);
+    return data;
   };
 
   const logout = async () => { await api.logout(); setCurrentUser(null); setCurrentOrg(null); setAvailableOrgs([]); };
@@ -54,7 +68,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const isCustomerAdmin = currentUser?.role === 'CUSTOMER_ADMIN';
   const isCustomerUser = currentUser?.role === 'CUSTOMER_USER';
 
-  return <AuthContext.Provider value={{ currentUser, currentOrg, availableOrgs, allDemoUsers: [], isLoading, login, logout, switchUser, refreshAuth, isSuperAdmin, isSecAnalyst, isCustomerAdmin, isCustomerUser }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ currentUser, currentOrg, availableOrgs, allDemoUsers: [], isLoading, login, verifyMfa, logout, switchUser, refreshAuth, isSuperAdmin, isSecAnalyst, isCustomerAdmin, isCustomerUser }}>{children}</AuthContext.Provider>;
 };
 
 export const useAuth = () => {
