@@ -5,6 +5,7 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './server/routes/api';
 import { durableApiRouter } from './server/routes/durableApi';
+import { durableIngestRouter } from './server/routes/durableIngest';
 import authRouter from './server/routes/auth';
 import { agentRouter } from './server/routes/agent';
 import { AgentService } from './server/services/agentService';
@@ -38,6 +39,8 @@ async function startServer() {
   app.use('/api/v1', agentRouter);
   app.use('/api', agentRouter);
   // Durable PostgreSQL-backed routes take precedence over the legacy in-memory compatibility router.
+  app.use('/api/v1', durableIngestRouter);
+  app.use('/api', durableIngestRouter);
   app.use('/api/v1', durableApiRouter);
   app.use('/api', durableApiRouter);
   app.use('/api/v1', apiRouter);
