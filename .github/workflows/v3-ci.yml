@@ -1,0 +1,48 @@
+name: CyberGuard v3 CI
+
+on:
+  push:
+    branches: [main, v3-production-foundation]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install
+      - run: npm run lint
+      - run: npm run build
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: pngee_app
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: pngee_cyberguard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U pngee_app -d pngee_cyberguard"
+          --health-interval=5s --health-timeout=5s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm install
+      - run: npm run db:migrate
+        env:
+          DATABASE_URL: postgresql://pngee_app:ci-password@127.0.0.1:5432/pngee_cyberguard
+      - run: npm run db:health
+        env:
+          DATABASE_URL: postgresql://pngee_app:ci-password@127.0.0.1:5432/pngee_cyberguard
