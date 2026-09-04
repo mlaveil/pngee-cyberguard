@@ -63,7 +63,8 @@ jobs:
       - name: Verify application role is not privileged
         run: |
           CONTAINER="$(docker ps --filter ancestor=postgres:17-alpine --format '{{.ID}}' | head -1)"
-          docker exec "$CONTAINER" psql -U postgres -d pngee_cyberguard -tAc "SELECT rolname || ':' || rolsuper || ':' || rolbypassrls FROM pg_roles WHERE rolname = 'pngee_app'" | grep -Fx 'pngee_app:f:f'
+          ROLE_STATE="$(docker exec "$CONTAINER" psql -U postgres -d pngee_cyberguard -Atqc "SELECT rolname || ':' || rolsuper || ':' || rolbypassrls FROM pg_roles WHERE rolname = 'pngee_app'" | tr -d '[:space:]')"
+          test "$ROLE_STATE" = "pngee_app:f:f"
       - run: npm run db:health
         env:
           DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
