@@ -1,7 +1,6 @@
 import { performance } from 'perf_hooks';
 import { db } from '../server/db/store';
 import { AgentService } from '../server/services/agentService';
-import { DetectionEngine } from '../server/services/detectionEngine';
 
 interface BenchmarkTierResult {
   endpointCount: number;
@@ -65,11 +64,11 @@ export async function runTelemetryLoadTest(): Promise<BenchmarkTierResult[]> {
 
     for (let i = 0; i < identities.length; i++) {
       const endpoint = identities[i];
-      const asset = db.assets.find(a => a.id === endpoint.assetId);
+      const asset = db.assets.find(a => a.id === endpoint.endpointId);
       if (!asset) continue;
 
       const opStart = performance.now();
-      AgentService.processHeartbeat(endpoint, asset, endpoint.ipAddress);
+      AgentService.processHeartbeat(endpoint, asset, endpoint.lastIp);
       AgentService.processSystemMetrics(endpoint, asset, {
         cpuUsagePercent: 24.5,
         memoryUsagePercent: 45.2,
@@ -85,18 +84,14 @@ export async function runTelemetryLoadTest(): Promise<BenchmarkTierResult[]> {
       });
 
       for (let eventIndex = 0; eventIndex < 2; eventIndex++) {
-        const event = {
-          endpointId: endpoint.endpointId,
-          agentId: endpoint.agentId,
-          organizationId: testOrgId,
-          eventType: eventIndex === 0 ? 'PROCESS_START' : 'NETWORK_CONNECTION',
+        AgentService.recordNormalizedEvent({
+          organization_id: testOrgId,
+          asset_id: asset.id,
+          event_type: eventIndex === 0 ? 'PROCESS_START' : 'NETWORK_CONNECTION',
           severity: hasSecurityDefect ? 'HIGH' : 'INFORMATIONAL',
-          source: 'load-test',
           hostname: asset.hostname,
           metadata: { benchmark: true, endpointIndex: i, eventIndex },
-          occurredAt: new Date().toISOString(),
-        };
-        AgentService.processNormalizedEvent(endpoint, asset, event as any);
+        });
       }
       latencies.push(performance.now() - opStart);
     }
