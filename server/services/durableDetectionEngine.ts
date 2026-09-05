@@ -99,6 +99,7 @@ export async function ingestAndCorrelateDurably(payload: DurableDetectionPayload
       const targetHost = asset?.hostname || payload.host || 'unknown-host';
       const deduplicationKey = [payload.organizationId, triggered.id, targetHost.toLowerCase(), payload.eventCategory.toLowerCase(),
         (payload.source || '').toLowerCase(), (payload.username || '').toLowerCase(), payload.sourceIP || ''].join(':');
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [deduplicationKey]);
       const existing = await client.query(
         `SELECT * FROM alerts WHERE organization_id=$1 AND status NOT IN ('RESOLVED','SUPPRESSED')
          AND last_seen >= now() - ($2::text || ' minutes')::interval AND payload->>'deduplicationKey'=$3
