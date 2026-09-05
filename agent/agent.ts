@@ -6,7 +6,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
-const BASE_URL = (process.env.CYBERGUARD_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
+const BASE_URL = (process.env.CYBERGUARD_URL || 'https://127.0.0.1:3000').replace(/\/$/, '');
+const ALLOW_INSECURE = process.env.CYBERGUARD_ALLOW_INSECURE === 'true';
+if (!BASE_URL.startsWith('https://') && !ALLOW_INSECURE) {
+  throw new Error('CYBERGUARD_URL must use HTTPS. Set CYBERGUARD_ALLOW_INSECURE=true only for isolated development/lab use.');
+}
 const ENROLLMENT_TOKEN = process.env.CYBERGUARD_ENROLLMENT_TOKEN || '';
 const STATE_FILE = process.env.CYBERGUARD_AGENT_STATE || path.join(os.homedir(), '.pngee-cyberguard', 'agent.json');
 const DEFAULT_HEARTBEAT_SECONDS = Math.max(15, Number(process.env.CYBERGUARD_HEARTBEAT_SECONDS || 30));
@@ -23,7 +27,6 @@ type AgentState = {
 };
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-const sha256 = (value: string) => crypto.createHash('sha256').update(value).digest('hex');
 const canonical = (timestamp: string, method: string, requestPath: string, body: string) => `${timestamp}\n${method}\n${requestPath}\n${body}`;
 
 async function command(file: string, args: string[] = [], timeout = 5000): Promise<string> {
