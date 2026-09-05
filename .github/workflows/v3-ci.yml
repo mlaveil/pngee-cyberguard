@@ -47,6 +47,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install PostgreSQL client tools
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: npm install --no-audit --no-fund
       - name: Create migration and application roles
         run: |
@@ -97,3 +99,8 @@ jobs:
         run: npm run db:license-test
         env:
           DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
+      - name: Run PostgreSQL backup and isolated restore test
+        run: npm run db:backup && DATABASE_URL=postgresql://postgres:ci-admin-password@127.0.0.1:5432/pngee_cyberguard BACKUP_DIR="$RUNNER_TEMP/pngee-backup" RESTORE_DATABASE_URL=postgresql://postgres:ci-admin-password@127.0.0.1:5432/pngee_restore_test bash scripts/backup-restore-test.sh
+        env:
+          DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
+          BACKUP_DIR: ${{ runner.temp }}/pngee-backup
