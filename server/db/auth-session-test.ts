@@ -30,11 +30,15 @@ async function main() {
       const tokenHash = crypto.createHash('sha256').update(crypto.randomBytes(48)).digest('hex');
       const familyId = crypto.randomBytes(16).toString('hex');
       const tokenId = crypto.randomBytes(16).toString('hex');
+      const nextTokenId = crypto.randomBytes(16).toString('hex');
       await client.query(`INSERT INTO refresh_tokens (id,user_id,token_hash,family_id,expires_at) VALUES ($1,$2,$3,$4,now()+interval '30 days')`, [tokenId, userId, tokenHash, familyId]);
-      const refreshClaim = await client.query(`UPDATE refresh_tokens SET revoked_at=now(),replaced_by=$2 WHERE id=$1 AND revoked_at IS NULL RETURNING id`, [tokenId, crypto.randomBytes(16).toString('hex')]);
+      await client.query(`INSERT INTO refresh_tokens (id,user_id,token_hash,family_id,expires_at) VALUES ($1,$2,$3,$4,now()+interval '30 days')`, [nextTokenId, userId, crypto.createHash('sha256').update(crypto.randomBytes(48)).digest('hex'), familyId]);
+      const refreshClaim = await client.query(`UPDATE refresh_tokens SET revoked_at=now(),replaced_by=$2 WHERE id=$1 AND revoked_at IS NULL RETURNING id`, [tokenId, nextTokenId]);
       if (refreshClaim.rowCount !== 1) throw new Error('Refresh token first-use rotation failed');
       const refreshReplay = await client.query(`UPDATE refresh_tokens SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING id`, [tokenId]);
       if (refreshReplay.rowCount !== 0) throw new Error('Refresh token replay was accepted');
+      const familyState = await client.query(`SELECT revoked_at FROM refresh_tokens WHERE family_id=$1 AND id=$2`, [familyId, tokenId]);
+      if (!familyState.rowCount || !familyState.rows[0].revoked_at) throw new Error('Rotated refresh token was not revoked');
     });
     console.log('Auth/session hardening: PASS');
   } finally {
