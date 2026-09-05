@@ -7,9 +7,13 @@ set -euo pipefail
 
 rm -rf "$BACKUP_DIR"
 mkdir -p "$BACKUP_DIR"
-BACKUP_DIR="$BACKUP_DIR" DATABASE_URL="$DATABASE_URL" bash scripts/backup-postgres.sh
+DATABASE_URL="$DATABASE_URL" BACKUP_DIR="$BACKUP_DIR" bash scripts/backup-postgres.sh
 BACKUP_FILE="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.dump' -print -quit)"
 test -n "$BACKUP_FILE"
+
+restore_db="${RESTORE_DATABASE_URL##*/}"
+restore_admin_url="${RESTORE_DATABASE_URL%/*}/postgres"
+psql "$restore_admin_url" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$restore_db\";" -c "CREATE DATABASE \"$restore_db\";"
 RESTORE_DATABASE_URL="$RESTORE_DATABASE_URL" BACKUP_FILE="$BACKUP_FILE" CONFIRM_RESTORE=YES bash scripts/restore-postgres.sh
 
 psql "$RESTORE_DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
