@@ -1,4 +1,4 @@
-import { pool, query, withSecurityContext } from './postgres';
+import { pool, withSecurityContext } from './postgres';
 import { ingestAndCorrelateDurably } from '../services/durableDetectionEngine';
 
 const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -16,37 +16,31 @@ async function main() {
       await client.query(`INSERT INTO detection_rules (id,organization_id,name,enabled,category,severity,payload) VALUES ($1,$2,'Repeated authentication failures',true,'AUTHENTICATION','HIGH',$3),($4,$2,'Suspicious PowerShell execution',true,'ENDPOINT','HIGH','{}')`, [ruleThreshold, orgA, JSON.stringify({ threshold: 2, timeWindowMinutes: 10 }), rulePowerShell]);
     });
 
-    const first = await ingestAndCorrelateDurably({
-      organizationId: orgA, source: 'test-sensor', sourceType: 'AUTH', severity: 'MEDIUM',
-      eventCategory: 'AUTHENTICATION', host: 'det-test-host', sourceIP: '10.77.0.20', username: 'alice',
-      eventDescription: 'Failed authentication attempt'
-    });
+    const first = await ingestAndCorrelateDurably({ organizationId: orgA, source: 'test-sensor', sourceType: 'AUTH', severity: 'MEDIUM', eventCategory: 'AUTHENTICATION', host: 'det-test-host', sourceIP: '10.77.0.20', username: 'alice', eventDescription: 'Failed authentication attempt' });
     if (first.generatedAlert) throw new Error('Threshold rule triggered before threshold was reached');
 
-    const second = await ingestAndCorrelateDurably({
-      organizationId: orgA, source: 'test-sensor', sourceType: 'AUTH', severity: 'MEDIUM',
-      eventCategory: 'AUTHENTICATION', host: 'det-test-host', sourceIP: '10.77.0.20', username: 'alice',
-      eventDescription: 'Failed authentication attempt'
-    });
+    const second = await ingestAndCorrelateDurably({ organizationId: orgA, source: 'test-sensor', sourceType: 'AUTH', severity: 'MEDIUM', eventCategory: 'AUTHENTICATION', host: 'det-test-host', sourceIP: '10.77.0.20', username: 'alice', eventDescription: 'Failed authentication attempt' });
     if (!second.generatedAlert || second.isDeduplicated) throw new Error('Threshold detection did not generate a new alert');
 
-    const duplicate = await ingestAndCorrelateDurably({
-      organizationId: orgA, source: 'test-sensor', sourceType: 'AUTH', severity: 'MEDIUM',
-      eventCategory: 'AUTHENTICATION', host: 'det-test-host', sourceIP: '10.77.0.20', username: 'alice',
-      eventDescription: 'Failed authentication attempt'
-    });
-    if (!duplicate.generatedAlert || !duplicate.isDeduplicated || Number(duplicate.generatedAlert.occurrenceCount) < 2) {
-      throw new Error('Alert deduplication/occurrence counting failed');
-    }
+    const duplicate = await ingestAndCorrelateDurably({ organizationId: orgA, source: 'test-sensor', sourceType: 'AUTH', severity: 'MEDIUM', eventCategory: 'AUTHENTICATION', host: 'det-test-host', sourceIP: '10.77.0.20', username: 'alice', eventDescription: 'Failed authentication attempt' });
+    if (!duplicate.generatedAlert || !duplicate.isDeduplicated || Number(duplicate.generatedAlert.occurrenceCount) < 2) throw new Error('Alert deduplication/occurrence counting failed');
 
-    const correlated = await ingestAndCorrelateDurably({
-      organizationId: orgA, source: 'test-sensor', sourceType: 'PROCESS', severity: 'HIGH',
-      eventCategory: 'ENDPOINT', host: 'det-test-host', username: 'alice',
-      eventDescription: 'Suspicious PowerShell execution detected', mitreTechnique: 'T1059.001'
-    });
-    if (!correlated.generatedAlert) throw new Error('PowerShell detection did not generate an alert');
-    if (!correlated.correlatedIncident) throw new Error('High-severity alerts were not correlated into an incident');
+    const distinctSource = await ingestAndCorrelateDurably({ organizationId: orgA, source: 'second-sensor', sourceType: 'AUTH', severity: 'MEDIUM', eventCategory: 'AUTHENTICATION', host: 'det-test-host', sourceIP: '10.77.0.20', username: 'alice', eventDescription: 'Failed authentication attempt' });
+    if (!distinctSource.generatedAlert || distinctSource.isDeduplicated || distinctSource.generatedAlert.id === duplicate.generatedAlert.id) throw new Error('Distinct telemetry source incorrectly collapsed into the same alert');
+
+    const correlated = await ingestAndCorrelateDurably({ organizationId: orgA, source: 'test-sensor', sourceType: 'PROCESS', severity: 'HIGH', eventCategory: 'ENDPOINT', host: 'det-test-host', username: 'alice', eventDescription: 'Suspicious PowerShell execution detected', mitreTechnique: 'T1059.001' });
+    if (!correlated.generatedAlert || !correlated.correlatedIncident) throw new Error('High-severity alerts were not correlated into an incident');
     if (!correlated.correlatedIncident.relatedAlertIds?.includes(second.generatedAlert.id)) throw new Error('Incident is missing the prior related alert');
+
+    const initialIncidentId = correlated.correlatedIncident.id;
+    const escalation = await ingestAndCorrelateDurably({ organizationId: orgA, source: 'test-sensor', sourceType: 'PROCESS', severity: 'CRITICAL', eventCategory: 'ENDPOINT', host: 'det-test-host', username: 'alice', eventDescription: 'Suspicious PowerShell execution detected', mitreTechnique: 'T1059.001' });
+    if (!escalation.correlatedIncident || escalation.correlatedIncident.id !== initialIncidentId || escalation.correlatedIncident.severity !== 'CRITICAL') throw new Error('Existing incident did not correlate or escalate to CRITICAL');
+
+    await withSecurityContext(null, true, async client => {
+      await client.query(`UPDATE incidents SET status='CLOSED',updated_at=now(),payload=payload || '{"status":"CLOSED"}'::jsonb WHERE id=$1`, [initialIncidentId]);
+    });
+    const afterClose = await ingestAndCorrelateDurably({ organizationId: orgA, source: 'test-sensor', sourceType: 'PROCESS', severity: 'HIGH', eventCategory: 'ENDPOINT', host: 'det-test-host', username: 'alice', eventDescription: 'Suspicious PowerShell execution detected', mitreTechnique: 'T1059.001' });
+    if (!afterClose.generatedAlert || afterClose.correlatedIncident?.id === initialIncidentId) throw new Error('Closed incident was incorrectly reopened/correlated');
 
     const tenantIsolation = await withSecurityContext(orgB, false, async client => {
       const alerts = await client.query(`SELECT id FROM alerts WHERE organization_id=$1`, [orgA]);
@@ -56,7 +50,7 @@ async function main() {
     });
     if (tenantIsolation.alerts !== 0 || tenantIsolation.incidents !== 0 || tenantIsolation.events !== 0) throw new Error('Detection data crossed tenant RLS boundary');
 
-    console.log('Durable detection tests passed: threshold, alert creation, deduplication, incident correlation, tenant isolation.');
+    console.log('Durable detection tests passed: threshold, source-aware deduplication, incident correlation, severity escalation, closed-incident isolation, tenant isolation.');
   } finally {
     await withSecurityContext(null, true, async client => {
       await client.query(`DELETE FROM security_events WHERE organization_id IN ($1,$2)`, [orgA, orgB]);
