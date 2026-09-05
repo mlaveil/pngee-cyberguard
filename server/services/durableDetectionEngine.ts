@@ -97,9 +97,9 @@ export async function ingestAndCorrelateDurably(payload: DurableDetectionPayload
 
     if (triggered) {
       const targetHost = asset?.hostname || payload.host || 'unknown-host';
+      const ruleSeverity = normalizeSeverity(triggered.severity || severity);
       const deduplicationKey = [payload.organizationId, triggered.id, targetHost.toLowerCase(), payload.eventCategory.toLowerCase(),
         (payload.source || '').toLowerCase(), (payload.username || '').toLowerCase(), payload.sourceIP || ''].join(':');
-      await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [deduplicationKey]);
       const existing = await client.query(
         `SELECT * FROM alerts WHERE organization_id=$1 AND status NOT IN ('RESOLVED','SUPPRESSED')
          AND last_seen >= now() - ($2::text || ' minutes')::interval AND payload->>'deduplicationKey'=$3
@@ -108,15 +108,18 @@ export async function ingestAndCorrelateDurably(payload: DurableDetectionPayload
       );
       if (existing.rowCount) {
         const row = existing.rows[0];
+        const nextSeverity = highestSeverity(normalizeSeverity(row.severity), highestSeverity(ruleSeverity, severity));
         const nextPayload = { ...(row.payload || {}), occurrenceCount: Number(row.occurrence_count || 1) + 1,
-          lastSeenTimestamp: timestamp, relatedEventIds: [...new Set([eventId, ...((row.payload || {}).relatedEventIds || [])])].slice(0, 25), deduplicationKey };
-        const updated = await client.query(`UPDATE alerts SET occurrence_count=occurrence_count+1,last_seen=$2,payload=$3 WHERE id=$1 RETURNING *`, [row.id, timestamp, JSON.stringify(nextPayload)]);
+          lastSeenTimestamp: timestamp, relatedEventIds: [...new Set([eventId, ...((row.payload || {}).relatedEventIds || [])])].slice(0, 25),
+          deduplicationKey, severity: nextSeverity };
+        const updated = await client.query(`UPDATE alerts SET occurrence_count=occurrence_count+1,last_seen=$2,severity=$3,payload=$4 WHERE id=$1 RETURNING *`,
+          [row.id, timestamp, nextSeverity, JSON.stringify(nextPayload)]);
         alert = updated.rows[0];
         deduplicated = true;
       } else {
         const alertId = `alt-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
         const alertPayload = {
-          id: alertId, organizationId: payload.organizationId, title: `${triggered.name} on ${targetHost}`, severity: normalizeSeverity(triggered.severity || severity), status: 'NEW',
+          id: alertId, organizationId: payload.organizationId, title: `${triggered.name} on ${targetHost}`, severity: ruleSeverity, status: 'NEW',
           detectionRuleId: triggered.id, detectionRuleName: triggered.name, assetId: asset?.id, assetHostname: targetHost, username: payload.username, timestamp,
           evidence: `Detection rule "${triggered.name}" triggered: ${payload.eventDescription}`, relatedEventIds: [eventId],
           recommendedAction: `Inspect event telemetry from source ${payload.source}. Verify host integrity on ${targetHost}.`, occurrenceCount: 1, lastSeenTimestamp: timestamp, deduplicationKey, createdAt: timestamp
