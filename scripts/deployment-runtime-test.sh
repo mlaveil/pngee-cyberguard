@@ -2,12 +2,13 @@
 set -euo pipefail
 
 PROJECT="pngee-runtime-${RANDOM}-${RANDOM}"
-PORT="${PORT:-${((RANDOM % 1000) + 3000)}}"
+DEFAULT_PORT=$(( (RANDOM % 1000) + 3000 ))
+PORT="${PORT:-$DEFAULT_PORT}"
 ENV_FILE="${RUNNER_TEMP:-/tmp}/pngee-runtime-${PROJECT}.env"
 
 cleanup() {
   docker compose -p "$PROJECT" -f docker-compose.production.yml --env-file "$ENV_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
-  rm -f "$ENV_FILE"
+  rm -f "$ENV_FILE" /tmp/pngee-runtime-health.json /tmp/pngee-runtime-second-start.log
 }
 trap cleanup EXIT
 
