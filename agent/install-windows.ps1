@@ -21,7 +21,7 @@ $envFile = Join-Path $InstallDir 'agent.env.ps1'
 "@ | Set-Content -Path $envFile -Encoding UTF8
 
 $nodePath = $node.Source
-$action = New-ScheduledTaskAction -Execute $nodePath -Argument "--import tsx `"$InstallDir\agent.ts`""
+$action = New-ScheduledTaskAction -Execute $nodePath -Argument "`"$InstallDir\agent.ts`""
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
