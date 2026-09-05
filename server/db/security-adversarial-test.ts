@@ -31,7 +31,6 @@ async function main() {
   const canaryB = `ISOLATION-CANARY-B-${crypto.randomBytes(12).toString('hex')}`;
 
   try {
-    // Schema-level controls: every tenant-owned table must have RLS and FORCE RLS.
     const inventory = await query<{ tablename: string; relrowsecurity: boolean; relforcerowsecurity: boolean }>(
       `SELECT c.relname AS tablename, c.relrowsecurity, c.relforcerowsecurity
        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -41,7 +40,6 @@ async function main() {
       if (!row.relrowsecurity || !row.relforcerowsecurity) throw new Error(`RLS/FORCE RLS missing on ${row.tablename}`);
     }
 
-    // Provision two tenants with unique canaries, then exercise the same transaction-scoped context used by the app.
     await withSecurityContext(null, true, async client => {
       await client.query(`INSERT INTO organizations (id,name,slug) VALUES ($1,'Adversarial A',$2),($3,'Adversarial B',$4)`, [orgA, `adv-a-${orgA.slice(0,8)}`, orgB, `adv-b-${orgB.slice(0,8)}`]);
       await client.query(`INSERT INTO users (id,organization_id,email,name,password_hash,role,status) VALUES ($1,$2,$3,'Adversarial A','not-a-real-password-hash','CUSTOMER_ADMIN','ACTIVE'),($4,$5,$6,'Adversarial B','not-a-real-password-hash','CUSTOMER_ADMIN','ACTIVE')`, [userA, orgA, `${userA}@invalid`, userB, orgB, `${userB}@invalid`]);
@@ -49,7 +47,6 @@ async function main() {
       await client.query(`INSERT INTO security_events (id,organization_id,event_category,event_description,severity) VALUES ($1,$2,'adversarial',$3,'HIGH'),($4,$5,'adversarial',$6,'HIGH')`, [crypto.randomUUID(), orgA, canaryA, crypto.randomUUID(), orgB, canaryB]);
     });
 
-    // Horizontal isolation: reads and writes must not cross tenant boundaries.
     const aRead = await withSecurityContext(orgA, false, client => client.query(`SELECT id, payload FROM assets WHERE id IN ($1,$2)`, [assetA, assetB]));
     if (aRead.rows.length !== 1 || aRead.rows[0].id !== assetA || JSON.stringify(aRead.rows[0].payload).includes(canaryB)) throw new Error('Cross-tenant read isolation failed for tenant A');
     const bRead = await withSecurityContext(orgB, false, client => client.query(`SELECT id, payload FROM assets WHERE id IN ($1,$2)`, [assetA, assetB]));
@@ -60,15 +57,13 @@ async function main() {
     await expectRejected('Cross-tenant update', () => withSecurityContext(orgA, false, client => client.query(
       `UPDATE assets SET hostname='ADV-HIJACK' WHERE id=$1`, [assetB])));
     await expectRejected('Cross-tenant delete', () => withSecurityContext(orgA, false, client => client.query(
-      `DELETE FROM assets WHERE id=$1`, [assetB]));
+      `DELETE FROM assets WHERE id=$1`, [assetB])));
 
-    // Transaction-local context must not bleed across pooled connections.
     const afterA = await withSecurityContext(orgA, false, client => client.query(`SELECT current_setting('app.current_organization_id', true) AS org`));
     if (afterA.rows[0].org !== orgA) throw new Error('Tenant context was not established');
     const afterContext = await query<{ org: string }>(`SELECT current_setting('app.current_organization_id', true) AS org`);
     if (afterContext.rows[0].org) throw new Error('Tenant context leaked outside transaction');
 
-    // JWT tamper and token-confusion resistance.
     const access = await issueAccessToken({ sub: userA, role: 'CUSTOMER_ADMIN', organizationId: orgA });
     await verifyAccessToken(access);
     const parts = access.split('.');
