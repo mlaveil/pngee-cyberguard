@@ -124,6 +124,10 @@ jobs:
         run: npm run db:mfa-test
         env:
           AUTH_SECRET: ci-auth-secret-must-be-at-least-32-characters-long
+      - name: Run authentication session hardening tests
+        run: npm run db:auth-session-test
+        env:
+          DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
       - name: Run signed licensing tests
         run: npm run db:license-test
         env:
