@@ -48,6 +48,14 @@ jobs:
       - name: Build production container
         run: docker build --pull -t pngee-cyberguard:ci .
 
+  deployment-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate production deployment runtime
+        run: bash scripts/deployment-runtime-test.sh
+
   postgres:
     runs-on: ubuntu-latest
     timeout-minutes: 10
