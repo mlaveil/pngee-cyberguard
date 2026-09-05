@@ -27,6 +27,27 @@ jobs:
           grep -q "durableIngestRouter" server.ts
           grep -q "durableLicenseRouter" server.ts
 
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install production dependencies
+        run: npm install --omit=dev --no-audit --no-fund
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+      - name: Check repository for tracked secret material
+        run: |
+          if git ls-files | grep -E '(^|/)(\.env($|\.)|.*\.(pem|key|p12|pfx)$)' ; then
+            echo "Tracked secret material detected" >&2
+            exit 1
+          fi
+      - name: Build production container
+        run: docker build --pull -t pngee-cyberguard:ci .
+
   postgres:
     runs-on: ubuntu-latest
     timeout-minutes: 10
