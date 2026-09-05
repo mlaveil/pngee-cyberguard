@@ -56,7 +56,7 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
           sudo apt-get install -y postgresql-client-17
-          pg_dump --version
+          /usr/lib/postgresql/17/bin/pg_dump --version
       - run: npm install --no-audit --no-fund
       - name: Create migration and application roles
         run: |
@@ -108,7 +108,7 @@ jobs:
         env:
           DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
       - name: Run PostgreSQL backup and isolated restore test
-        run: npm run db:backup && DATABASE_URL=postgresql://postgres:ci-admin-password@127.0.0.1:5432/pngee_cyberguard BACKUP_DIR="$RUNNER_TEMP/pngee-backup" RESTORE_DATABASE_URL=postgresql://postgres:ci-admin-password@127.0.0.1:5432/pngee_restore_test bash scripts/backup-restore-test.sh
+        run: DATABASE_URL=postgresql://postgres:ci-admin-password@127.0.0.1:5432/pngee_cyberguard BACKUP_DIR="$RUNNER_TEMP/pngee-backup" RESTORE_DATABASE_URL=postgresql://postgres:ci-admin-password@127.0.0.1:5432/pngee_restore_test PG_BIN_DIR=/usr/lib/postgresql/17/bin bash scripts/backup-restore-test.sh
         env:
           DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
           BACKUP_DIR: ${{ runner.temp }}/pngee-backup
