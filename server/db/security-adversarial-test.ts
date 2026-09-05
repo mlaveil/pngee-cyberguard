@@ -10,6 +10,11 @@ async function expectRejected(label: string, fn: () => Promise<unknown>) {
   if (!rejected) throw new Error(`${label}: expected rejection`);
 }
 
+async function expectZeroRows(label: string, fn: () => Promise<{ rowCount: number | null }>) {
+  const result = await fn();
+  if (result.rowCount !== 0) throw new Error(`${label}: expected zero affected rows, got ${result.rowCount}`);
+}
+
 async function main() {
   const orgA = crypto.randomUUID(), orgB = crypto.randomUUID();
   const assetA = crypto.randomUUID(), assetB = crypto.randomUUID();
@@ -40,8 +45,27 @@ async function main() {
     if (aEvents.rows.length !== 1 || aEvents.rows[0].id !== eventA || JSON.stringify(aEvents.rows[0]).includes(canaryB)) throw new Error('Cross-tenant security-event read isolation failed');
 
     await expectRejected('Cross-tenant insert',() => withSecurityContext(orgA,false,client => client.query(`INSERT INTO assets (id,organization_id,hostname,asset_type) VALUES ($1,$2,'ADV-CROSS','Server')`,[crypto.randomUUID(),orgB])));
-    await expectRejected('Cross-tenant update',() => withSecurityContext(orgA,false,client => client.query(`UPDATE assets SET hostname='ADV-HIJACK' WHERE id=$1`,[assetB])));
-    await expectRejected('Cross-tenant delete',() => withSecurityContext(orgA,false,client => client.query(`DELETE FROM assets WHERE id=$1`,[assetB])));
+
+    await expectZeroRows('Cross-tenant update', () =>
+      withSecurityContext(orgA, false, client =>
+        client.query(`UPDATE assets SET hostname='ADV-HIJACK' WHERE id=$1`, [assetB])
+      )
+    );
+
+    await expectZeroRows('Cross-tenant delete', () =>
+      withSecurityContext(orgA, false, client =>
+        client.query(`DELETE FROM assets WHERE id=$1`, [assetB])
+      )
+    );
+
+    const bAfterMutation = await withSecurityContext(orgB, false, client =>
+      client.query(`SELECT hostname,payload FROM assets WHERE id=$1`, [assetB])
+    );
+    if (
+      bAfterMutation.rows.length !== 1 ||
+      bAfterMutation.rows[0].hostname !== 'ADV-B' ||
+      JSON.stringify(bAfterMutation.rows[0].payload).includes(canaryA)
+    ) throw new Error('Cross-tenant mutation changed tenant B asset');
 
     const afterA = await withSecurityContext(orgA,false,client => client.query(`SELECT current_setting('app.current_organization_id',true) AS org`));
     if (afterA.rows[0].org !== orgA) throw new Error('Tenant context was not established');
