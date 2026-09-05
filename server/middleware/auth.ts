@@ -43,6 +43,9 @@ export async function authMiddleware(req: AuthenticatedRequest, res: Response, n
       `SELECT id, organization_id, name, email, role, avatar_url, phone, mfa_enabled, status, last_login_at, last_login_ip, created_at FROM users WHERE id = $1 AND status = 'ACTIVE'`, [userId]));
     const row = result.rows[0];
     if (!row) return void res.status(401).json({ error: 'Unauthorized', message: 'User is disabled or no longer exists.' });
+    if (String(row.role) !== role || String(row.organization_id ?? '') !== String(organizationId ?? '')) {
+      return void res.status(401).json({ error: 'Unauthorized', message: 'Access token is no longer valid.' });
+    }
     req.user = mapUser(row);
     const requestedOrg = (req.query.orgId as string) || (req.body?.organizationId as string) || (req.params?.orgId as string);
     if (!isGlobalAdmin) {
