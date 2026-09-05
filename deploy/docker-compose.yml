@@ -1,38 +1,50 @@
 services:
-  db:
+  postgres:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-pngee_cyberguard}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:-pngee_app}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD}
+      POSTGRES_MIGRATOR_USER: ${POSTGRES_MIGRATOR_USER:-pngee_migrator}
+      POSTGRES_MIGRATOR_PASSWORD: ${POSTGRES_MIGRATOR_PASSWORD:?Set POSTGRES_MIGRATOR_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ../docker/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-pngee_cyberguard}"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 20
 
   app:
     build:
-      context: .
+      context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
-      db:
+      postgres:
         condition: service_healthy
     ports:
-      - "${APP_PORT:-3000}:3000"
+      - "127.0.0.1:${APP_PORT:-3000}:3000"
     environment:
       NODE_ENV: production
+      APP_MODE: production
+      DEPLOYMENT_MODE: on_prem
       PORT: 3000
       TRUST_PROXY: ${TRUST_PROXY:-1}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-pngee_cyberguard}
-      MIGRATION_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-pngee_cyberguard}
-      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET}
-      LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY:?set LICENSE_PUBLIC_KEY}
-    command: ["sh", "-c", "npm run db:migrate && node dist/server.cjs"]
+      DATABASE_URL: postgresql://${POSTGRES_APP_USER:-pngee_app}:${POSTGRES_APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-pngee_cyberguard}
+      MIGRATION_DATABASE_URL: postgresql://${POSTGRES_MIGRATOR_USER:-pngee_migrator}:${POSTGRES_MIGRATOR_PASSWORD}@postgres:5432/${POSTGRES_DB:-pngee_cyberguard}
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET}
+      LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY:?Set LICENSE_PUBLIC_KEY}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://127.0.0.1:${APP_PORT:-3000}}
+      STORAGE_LOCAL_PATH: /var/lib/pngee/storage
+    volumes:
+      - pngee_storage:/var/lib/pngee/storage
+    command: ["node", "docker-entrypoint.cjs"]
 
 volumes:
   pgdata:
+  pngee_storage:
