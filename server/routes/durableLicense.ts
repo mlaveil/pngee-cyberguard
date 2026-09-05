@@ -2,10 +2,11 @@ import { Router, Response } from 'express';
 import { authMiddleware, requireRoles, AuthenticatedRequest } from '../middleware/auth';
 import { withSecurityContext } from '../db/postgres';
 import { verifyLicense, getLicense } from '../services/licenseService';
+import { UserRole } from '../../src/types';
 
 export const durableLicenseRouter = Router();
 durableLicenseRouter.use(authMiddleware as any);
-const GLOBAL = ['PNGEE_SUPER_ADMIN','STK_SUPER_ADMIN'];
+const GLOBAL: UserRole[] = ['PNGEE_SUPER_ADMIN','STK_SUPER_ADMIN'];
 
 // A license is a signed JWT issued outside the application. CyberGuard only verifies and stores it.
 durableLicenseRouter.post('/system/license/update', requireRoles(GLOBAL) as any, async (req: AuthenticatedRequest, res: Response) => {
