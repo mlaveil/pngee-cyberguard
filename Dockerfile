@@ -12,6 +12,7 @@ COPY --from=build /app/package*.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server ./server
+COPY --from=build /app/docker-entrypoint.cjs ./docker-entrypoint.cjs
 EXPOSE 3000
 USER node
-CMD ["node", "dist/server.cjs"]
+CMD ["node", "docker-entrypoint.cjs"]
