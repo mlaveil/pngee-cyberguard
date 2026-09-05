@@ -3,10 +3,13 @@ import { randomBytes } from 'crypto';
 import QRCode from 'qrcode';
 import { query, withSecurityContext } from '../db/postgres';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth';
+import { authRateLimit } from '../middleware/security';
 import { verifyPassword, issueAccessToken, issueMfaChallenge, verifyMfaChallenge, hashRefreshToken, generateTotpSecret, verifyTotp, encryptMfaSecret, decryptMfaSecret, generateRecoveryCodes, hashRecoveryCode } from '../services/authService';
 
 const router = Router();
 const REFRESH_COOKIE = 'pngee_refresh';
+router.use(authRateLimit);
+router.use((_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
 function publicUser(row:any){return{id:row.id,organizationId:row.organization_id,name:row.name,email:row.email,role:row.role,avatarUrl:row.avatar_url||undefined,phone:row.phone||undefined,mfaEnabled:Boolean(row.mfa_enabled),status:row.status,lastLoginAt:row.last_login_at||undefined,lastLoginIp:row.last_login_ip||undefined,createdAt:row.created_at};}
 function setRefreshCookie(res:Response,token:string){res.cookie(REFRESH_COOKIE,token,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'strict',path:'/api/v1/auth',maxAge:Number(process.env.JWT_REFRESH_TTL_DAYS||30)*86400000});}
 async function finishLogin(req:Request,res:Response,row:any){const accessToken=await issueAccessToken({sub:row.id,organizationId:row.organization_id,role:row.role});const refreshToken=randomBytes(48).toString('base64url');const expires=new Date(Date.now()+Number(process.env.JWT_REFRESH_TTL_DAYS||30)*86400000);await withSecurityContext(null,true,c=>c.query(`INSERT INTO refresh_tokens (id,user_id,token_hash,expires_at,created_ip,user_agent) VALUES ($1,$2,$3,$4,$5,$6)`,[randomBytes(16).toString('hex'),row.id,hashRefreshToken(refreshToken),expires.toISOString(),req.ip,req.get('user-agent')||null]));await withSecurityContext(null,true,c=>c.query('UPDATE users SET last_login_at=now(),last_login_ip=$2 WHERE id=$1',[row.id,req.ip]));setRefreshCookie(res,refreshToken);res.json({user:publicUser(row),accessToken});}
