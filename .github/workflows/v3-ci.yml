@@ -26,6 +26,15 @@ jobs:
           grep -q "durableAgentRouter" server.ts
           grep -q "durableIngestRouter" server.ts
           grep -q "durableLicenseRouter" server.ts
+      - name: Validate release configuration and deployment hardening
+        run: |
+          printf '%s' 'ci-auth-secret-must-be-at-least-32-characters-long' >/dev/null
+          DATABASE_URL=postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard \
+          AUTH_SECRET=ci-auth-secret-must-be-at-least-32-characters-long \
+          LICENSE_PUBLIC_KEY='ci-release-validation-key' \
+          NODE_ENV=production \
+          PSQL=psql \
+          bash scripts/release-validation.sh
 
   postgres:
     runs-on: ubuntu-latest
