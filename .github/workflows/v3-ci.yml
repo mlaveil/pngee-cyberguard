@@ -80,6 +80,10 @@ jobs:
           DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
       - run: npm run db:durable-test
         env:
+          DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.0.1:5432/pngee_cyberguard
+      - name: Run endpoint agent integration tests
+        run: npm run db:agent-test
+        env:
           DATABASE_URL: postgresql://pngee_app:ci-app-password@127.0.0.1:5432/pngee_cyberguard
       - name: Run MFA primitive tests
         run: npm run db:mfa-test
