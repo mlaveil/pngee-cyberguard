@@ -11,15 +11,13 @@ async function main() {
   const tokenId = id('token', suffix);
   const endpointId = id('ep', suffix);
   const agentId = id('agt', suffix);
-  const eventId = id('evt', suffix);
   const enrollmentToken = `enroll-${crypto.randomBytes(24).toString('hex')}`;
-  const deviceKey = `pngee_dev_${crypto.randomBytes(32).toString('hex')}`;
-  const now = new Date(Date.now() + 60_000).toISOString();
+  const licenseJti = `agent-test-license-${suffix}`;
   let enrolled: Awaited<ReturnType<typeof DurableAgentService.enroll>> | null = null;
 
   try {
     await withSecurityContext(null, true, async client => {
-      await client.query(`INSERT INTO organizations (id,name,slug,domain,contact_email,max_assets) VALUES ($1,$2,$3,'agent-test.invalid','agent@test.invalid',10)`, [orgId, 'Agent Integration Test', `agent-${suffix}`]);
+      await client.query(`INSERT INTO organizations (id,name,slug,domain,contact_email,max_assets,license_jti,license_expires_at,license_max_assets,license_features) VALUES ($1,$2,$3,'agent-test.invalid','agent@test.invalid',10,$4,now()+interval '1 hour',10,'["endpoint_protection"]')`, [orgId, 'Agent Integration Test', `agent-${suffix}`, licenseJti]);
       await client.query(`INSERT INTO enrollment_tokens (id,organization_id,token_hash,name,os_target,expires_at,max_uses) VALUES ($1,$2,$3,'Agent Test Token','all',$4,1)`, [tokenId, orgId, sha256(enrollmentToken), '2099-01-01T00:00:00Z']);
     });
 
@@ -55,7 +53,7 @@ async function main() {
     const security = await withSecurityContext(orgId, false, client => client.query(`SELECT event_type,severity FROM security_events WHERE asset_id=$1 AND event_type='firewall_disabled'`, [enrolled.endpointId]));
     if (security.rowCount !== 1 || security.rows[0].severity !== 'HIGH') throw new Error('Security telemetry detection event was not persisted.');
 
-    console.log('[AGENT] enrollment, HMAC authentication, replay protection, telemetry persistence, and tenant isolation passed');
+    console.log('[AGENT] enrollment, licensed entitlement, HMAC authentication, replay protection, telemetry persistence, and tenant isolation passed');
   } finally {
     await withSecurityContext(null, true, async client => {
       if (enrolled) {
