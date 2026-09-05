@@ -1,69 +1,41 @@
+import 'dotenv/config';
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { apiRouter } from './server/routes/api';
-import { agentRouter } from './server/routes/agent';
-import { AgentService } from './server/services/agentService';
+import { durablePlatformRouter } from './server/routes/durablePlatform';
+import { durableApiRouter } from './server/routes/durableApi';
+import { durableIngestRouter } from './server/routes/durableIngest';
+import { durableAgentRouter } from './server/routes/durableAgent';
+import { durableLicenseRouter } from './server/routes/durableLicense';
+import { licensedAssetCreationMiddleware } from './server/middleware/licenseEntitlement';
+import authRouter from './server/routes/auth';
+import { securityHeaders, apiRateLimit, rejectInsecureProductionRequests } from './server/middleware/security';
+import { healthCheck } from './server/db/postgres';
 
-async function startServer() {
-  const app = express();
-  const PORT = 3000;
+async function startServer(){
+  if(process.env.NODE_ENV==='production'&&!process.env.DATABASE_URL)throw new Error('Production startup blocked: DATABASE_URL is required for PNGee CyberGuard v3.');
+  if(process.env.NODE_ENV==='production'&&(!process.env.AUTH_SECRET||process.env.AUTH_SECRET.length<32))throw new Error('Production startup blocked: AUTH_SECRET must be configured with at least 32 characters.');
+  const app=express(),PORT=Number(process.env.PORT||3000);
+  app.set('trust proxy',Number(process.env.TRUST_PROXY||0));app.disable('x-powered-by');
+  app.use(securityHeaders);app.use(rejectInsecureProductionRequests);app.use(apiRateLimit);
+  app.use(express.json({limit:'1mb'}));app.use(express.urlencoded({extended:true,limit:'1mb'}));app.use(cookieParser());
+  app.get('/api/health',async(_req,res)=>{try{const database=await healthCheck();res.status(database?200:503).json({status:database?'ok':'degraded',database:database?'healthy':'unhealthy',timestamp:new Date().toISOString()});}catch{res.status(503).json({status:'degraded',database:'unhealthy',timestamp:new Date().toISOString()});}});
 
-  // Body parser middleware
-  app.use(express.json({ limit: '10mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+  app.use('/api/v1/auth',authRouter);
+  app.use('/api/v1',durableAgentRouter);app.use('/api',durableAgentRouter);
+  app.use('/api/v1',durableIngestRouter);app.use('/api',durableIngestRouter);
+  app.use('/api/v1',durableLicenseRouter);app.use('/api',durableLicenseRouter);
+  app.post(['/api/v1/assets','/api/assets'],licensedAssetCreationMiddleware as any);
+  // All customer/business APIs are now database-backed. The legacy in-memory API is intentionally not mounted.
+  app.use('/api/v1',durablePlatformRouter);app.use('/api',durablePlatformRouter);
+  app.use('/api/v1',durableApiRouter);app.use('/api',durableApiRouter);
 
-  // Request logger for auditability
-  app.use((req, res, next) => {
-    if (req.path.startsWith('/api/')) {
-      console.log(`[API] ${req.method} ${req.path} - ${new Date().toISOString()}`);
-    }
-    next();
-  });
-
-  // Health check endpoint
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', service: 'PNGee CyberGuard Managed Cybersecurity Platform', timestamp: new Date().toISOString() });
-  });
-
-  // Mount Dedicated Agent Telemetry & Enrollment Router (exempt from user session auth)
-  app.use('/api/v1', agentRouter);
-  app.use('/api', agentRouter);
-
-  // Mount Authenticated Core SOC & Tenant Management API Router
-  app.use('/api/v1', apiRouter);
-  app.use('/api', apiRouter);
-
-  // Start Endpoint Heartbeat Watchdog Daemon (Runs every 30s)
-  setInterval(() => {
-    try {
-      AgentService.checkHeartbeatTimeouts();
-    } catch (err) {
-      console.error('[Watchdog] Error during heartbeat evaluation:', err);
-    }
-  }, 30000);
-
-  // Vite middleware for development vs static build in production
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true, host: '0.0.0.0', port: 3000 },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+  if(process.env.NODE_ENV!=='production'){
+    const vite=await createViteServer({server:{middlewareMode:true,host:'0.0.0.0',port:PORT},appType:'spa'});app.use(vite.middlewares);
+  }else{
+    const distPath=path.join(process.cwd(),'dist');app.use(express.static(distPath,{index:false}));app.get('*',(req,res)=>res.sendFile(path.join(distPath,'index.html')));
   }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🛡️ PNGee CyberGuard SOC Platform running at http://0.0.0.0:${PORT}`);
-  });
+  app.listen(PORT,'0.0.0.0',()=>console.log(`PNGee CyberGuard listening on port ${PORT}; production traffic must use HTTPS.`));
 }
-
-startServer().catch(err => {
-  console.error('Failed to start PNGee CyberGuard server:', err);
-  process.exit(1);
-});
+startServer().catch(err=>{console.error('Failed to start PNGee CyberGuard:',err);process.exit(1);});

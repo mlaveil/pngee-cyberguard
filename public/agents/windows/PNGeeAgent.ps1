@@ -1,189 +1,26 @@
-<#
-.SYNOPSIS
-    PNGee CyberGuard Windows Endpoint Protection & Telemetry Agent
-    Copyright (c) 2026 PNGee IT Solutions. All rights reserved.
-.DESCRIPTION
-    Continuously monitors host telemetry, endpoint security status,
-    firewall profiles, Microsoft Defender, and logs security events
-    directly to the PNGee CyberGuard Telemetry API.
-#>
-param(
-    [switch]$Once,
-    [string]$ConfigFile = "$env:ProgramData\PNGee\CyberGuard\config.json"
-)
-
-$ErrorActionPreference = "SilentlyContinue"
-
-if (-not (Test-Path $ConfigFile)) {
-    Write-Error "PNGee CyberGuard Agent configuration not found at $ConfigFile. Please run install.ps1 first."
-    exit 1
-}
-
-$Config = Get-Content -Path $ConfigFile -Raw | ConvertFrom-Json
-$ServerUrl = $Config.serverUrl
-$AgentId = $Config.agentId
-$DeviceKey = $Config.deviceKey
-$EndpointId = $Config.endpointId
-
-function Send-PNGeeTelemetry {
-    param(
-        [string]$EndpointPath,
-        [hashtable]$Payload
-    )
-    $uri = "$ServerUrl$EndpointPath"
-    $json = $Payload | ConvertTo-Json -Depth 6
-    $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
-
-    $headers = @{
-        "X-Agent-ID"   = $AgentId
-        "X-Agent-Key"  = $DeviceKey
-        "X-Timestamp"  = $timestamp
-        "Content-Type" = "application/json"
-    }
-
-    try {
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls13
-        $resp = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $json -TimeoutSec 10
-        return $resp
-    } catch {
-        Write-Warning "Failed to transmit telemetry to $EndpointPath: $_"
-        return $null
-    }
-}
-
-function Get-SystemMetrics {
-    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-    $totalRam = if ($os) { [math]::Round($os.TotalVisibleMemorySize / 1024, 0) } else { 16384 }
-    $freeRam = if ($os) { [math]::Round($os.FreePhysicalMemory / 1024, 0) } else { 8192 }
-    $ramUsagePct = if ($totalRam -gt 0) { [math]::Round((($totalRam - $freeRam) / $totalRam) * 100, 1) } else { 50 }
-
-    $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Measure-Object -Property LoadPercentage -Average
-    $cpuUsagePct = if ($cpu -and $cpu.Average) { [math]::Round($cpu.Average, 1) } else { 18.5 }
-
-    $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue
-    $diskUsagePct = if ($disk -and $disk.Size) { [math]::Round((($disk.Size - $disk.FreeSpace) / $disk.Size) * 100, 1) } else { 42.0 }
-
-    $loggedUser = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName
-    if (-not $loggedUser) { $loggedUser = $env:USERNAME }
-
-    return @{
-        cpuUsagePercent     = $cpuUsagePct
-        ramUsagePercent     = $ramUsagePct
-        diskUsagePercent    = $diskUsagePct
-        loggedInUsers       = @($loggedUser)
-        runningProcesses    = (Get-Process -ErrorAction SilentlyContinue).Count
-        timestamp           = (Get-Date).ToString("o")
-    }
-}
-
-function Get-SecurityMetrics {
-    # 1. Microsoft Defender Status
-    $avEnabled = $true
-    $avUpToDate = $true
-    $rtpEnabled = $true
-    try {
-        $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
-        if ($defender) {
-            $avEnabled = [bool]$defender.AntivirusEnabled
-            $rtpEnabled = [bool]$defender.RealTimeProtectionEnabled
-            $sigAgeDays = if ($defender.AntivirusSignatureAge) { $defender.AntivirusSignatureAge } else { 0 }
-            $avUpToDate = ($sigAgeDays -le 3)
-        }
-    } catch {
-        # Fallback to SecurityCenter2 WMI if available
-        $wmiAv = Get-CimInstance -Namespace "root\SecurityCenter2" -ClassName "AntiVirusProduct" -ErrorAction SilentlyContinue
-        if ($wmiAv) {
-            $avEnabled = $true
-        }
-    }
-
-    # 2. Windows Firewall Status
-    $fwProfiles = Get-NetFirewallProfile -ErrorAction SilentlyContinue
-    $fwDomain = $true
-    $fwPrivate = $true
-    $fwPublic = $true
-    if ($fwProfiles) {
-        $dom = $fwProfiles | Where-Object { $_.Name -eq 'Domain' }
-        $priv = $fwProfiles | Where-Object { $_.Name -eq 'Private' }
-        $pub = $fwProfiles | Where-Object { $_.Name -eq 'Public' }
-        if ($dom) { $fwDomain = [bool]$dom.Enabled }
-        if ($priv) { $fwPrivate = [bool]$priv.Enabled }
-        if ($pub) { $fwPublic = [bool]$pub.Enabled }
-    }
-    $allFwEnabled = ($fwDomain -and $fwPrivate -and $fwPublic)
-
-    # 3. Windows Update Patches count
-    $patches = Get-HotFix -ErrorAction SilentlyContinue
-    $patchCount = if ($patches) { $patches.Count } else { 12 }
-
-    return @{
-        antivirusEnabled       = $avEnabled
-        antivirusUpToDate      = $avUpToDate
-        realTimeProtection     = $rtpEnabled
-        firewallEnabled        = $allFwEnabled
-        firewallProfiles       = @{
-            domain  = $fwDomain
-            private = $fwPrivate
-            public  = $fwPublic
-        }
-        installedPatchesCount  = $patchCount
-        missingPatchesCount    = 0
-        timestamp              = (Get-Date).ToString("o")
-    }
-}
-
-function Get-CriticalServices {
-    $svcsToCheck = @("WinDefend", "MpsSvc", "wuauserv", "RpcSs", "EventLog", "Dnscache")
-    $list = @()
-    foreach ($name in $svcsToCheck) {
-        $svc = Get-Service -Name $name -ErrorAction SilentlyContinue
-        if ($svc) {
-            $list += @{
-                name        = $svc.Name
-                displayName = $svc.DisplayName
-                status      = $svc.Status.ToString()
-                startType   = $svc.StartType.ToString()
-            }
-        }
-    }
-    return $list
-}
-
-function Run-AgentCycle {
-    Write-Host "[*] Executing PNGee CyberGuard telemetry heartbeat cycle..." -ForegroundColor Cyan
-
-    # 1. Heartbeat
-    Send-PNGeeTelemetry -EndpointPath "/api/v1/telemetry/heartbeat" -Payload @{
-        status    = "ONLINE"
-        timestamp = (Get-Date).ToString("o")
-    }
-
-    # 2. System Performance Telemetry
-    $sysMetrics = Get-SystemMetrics
-    Send-PNGeeTelemetry -EndpointPath "/api/v1/telemetry/system" -Payload $sysMetrics
-
-    # 3. Endpoint Security Posture Telemetry
-    $secMetrics = Get-SecurityMetrics
-    Send-PNGeeTelemetry -EndpointPath "/api/v1/telemetry/security" -Payload $secMetrics
-
-    # 4. Critical Services Telemetry
-    $services = Get-CriticalServices
-    Send-PNGeeTelemetry -EndpointPath "/api/v1/telemetry/services" -Payload @{
-        services  = $services
-        timestamp = (Get-Date).ToString("o")
-    }
-
-    Write-Host "[+] Heartbeat cycle dispatched successfully." -ForegroundColor Green
-}
-
-# Execution Entry Point
-if ($Once) {
-    Run-AgentCycle
-} else {
-    Write-Host "Starting PNGee CyberGuard Agent daemon loop (Interval: $($Config.heartbeatSec || 30)s)..." -ForegroundColor Green
-    while ($true) {
-        Run-AgentCycle
-        $sleepInterval = if ($Config.heartbeatSec) { $Config.heartbeatSec } else { 30 }
-        Start-Sleep -Seconds $sleepInterval
-    }
-}
+<# PNGee CyberGuard Windows Endpoint Agent - authenticated telemetry client #>
+param([switch]$Once,[string]$ConfigFile="$env:ProgramData\PNGee\CyberGuard\config.json")
+$ErrorActionPreference="Stop"
+if(-not(Test-Path $ConfigFile)){Write-Error "Configuration not found: $ConfigFile";exit 1}
+$Config=Get-Content $ConfigFile -Raw|ConvertFrom-Json
+$ServerUrl=$Config.serverUrl.TrimEnd('/')
+$AgentId=[string]$Config.agentId
+$DeviceKey=[string]$Config.deviceKey
+if(-not $ServerUrl.StartsWith('https://')){Write-Error "PNGee CyberGuard requires an HTTPS server URL";exit 1}
+if([string]::IsNullOrWhiteSpace($AgentId)-or[string]::IsNullOrWhiteSpace($DeviceKey)){Write-Error "Agent credentials are missing";exit 1}
+function New-RequestId{return ([guid]::NewGuid()).ToString('N')}
+function New-HmacHex([string]$Key,[string]$Data){$h=[System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($Key));try{return ([BitConverter]::ToString($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($Data)))-replace '-','').ToLowerInvariant()}finally{$h.Dispose()}}
+function Send-PNGeeTelemetry{param([string]$EndpointPath,[object]$Payload)
+ $json=$Payload|ConvertTo-Json -Depth 10 -Compress
+ $timestamp=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
+ $requestId=New-RequestId
+ $canonical="$timestamp`nPOST`n$EndpointPath`n$json"
+ $signature=New-HmacHex $DeviceKey $canonical
+ $headers=@{'X-Agent-ID'=$AgentId;'X-Agent-Key'=$DeviceKey;'X-Timestamp'=$timestamp;'X-Request-ID'=$requestId;'X-Agent-Signature'=$signature}
+ try{Invoke-RestMethod -Uri "$ServerUrl$EndpointPath" -Method Post -Headers $headers -ContentType 'application/json' -Body $json -TimeoutSec 15}catch{Write-Warning "Telemetry failed for $EndpointPath: $_";return $null}}
+function Get-SystemMetrics{$os=Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue;$total=if($os){$os.TotalVisibleMemorySize}else{0};$free=if($os){$os.FreePhysicalMemory}else{0};$cpu=(Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue|Measure-Object LoadPercentage -Average).Average;$disk=Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue;$user=(Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName;return @{cpuUsagePercent=[math]::Round([double]$cpu,1);ramUsagePercent=if($total){[math]::Round((($total-$free)/$total)*100,1)}else{0};diskUsagePercent=if($disk.Size){[math]::Round((($disk.Size-$disk.FreeSpace)/$disk.Size)*100,1)}else{0};loggedInUsers=@($user);runningProcesses=(Get-Process -ErrorAction SilentlyContinue).Count;timestamp=(Get-Date).ToUniversalTime().ToString('o')}}
+function Get-SecurityMetrics{$av=$true;$rtp=$true;$updated=$true;try{$d=Get-MpComputerStatus -ErrorAction Stop;$av=[bool]$d.AntivirusEnabled;$rtp=[bool]$d.RealTimeProtectionEnabled;$updated=([int]$d.AntivirusSignatureAge -le 3)}catch{};$fw=Get-NetFirewallProfile -ErrorAction SilentlyContinue;$domain=if($fw){[bool](($fw|Where-Object Name -eq 'Domain').Enabled)}else{$true};$private=if($fw){[bool](($fw|Where-Object Name -eq 'Private').Enabled)}else{$true};$public=if($fw){[bool](($fw|Where-Object Name -eq 'Public').Enabled)}else{$true};return @{antivirusEnabled=$av;antivirusUpToDate=$updated;realTimeProtection=$rtp;firewallEnabled=($domain-and$private-and$public);firewallProfiles=@{domain=$domain;private=$private;public=$public};installedPatchesCount=@(Get-HotFix -ErrorAction SilentlyContinue).Count;missingPatchesCount=0;timestamp=(Get-Date).ToUniversalTime().ToString('o')}}
+function Get-CriticalServices{$names=@('WinDefend','MpsSvc','wuauserv','RpcSs','EventLog','Dnscache');$out=@();foreach($n in $names){$s=Get-Service $n -ErrorAction SilentlyContinue;if($s){$out+=@{name=$s.Name;displayName=$s.DisplayName;status=$s.Status.ToString();startType=$s.StartType.ToString()}}};return $out}
+function Get-WindowsSecurityEvents{$out=@();try{$events=Get-WinEvent -FilterHashtable @{LogName='Security';StartTime=(Get-Date).AddMinutes(-5)} -MaxEvents 50 -ErrorAction Stop;foreach($e in $events){$out+=@{eventId=$e.Id;provider=$e.ProviderName;level=$e.LevelDisplayName;message=($e.Message|Select-Object -First 1);occurredAt=$e.TimeCreated.ToUniversalTime().ToString('o');logName='Security'}}}catch{};return $out}
+function Run-AgentCycle{Write-Host '[*] Sending authenticated PNGee telemetry...' -ForegroundColor Cyan;Send-PNGeeTelemetry '/api/v1/telemetry/heartbeat' @{status='ONLINE';timestamp=(Get-Date).ToUniversalTime().ToString('o')}|Out-Null;Send-PNGeeTelemetry '/api/v1/telemetry/system' (Get-SystemMetrics)|Out-Null;Send-PNGeeTelemetry '/api/v1/telemetry/security' (Get-SecurityMetrics)|Out-Null;Send-PNGeeTelemetry '/api/v1/telemetry/services' @{services=(Get-CriticalServices);timestamp=(Get-Date).ToUniversalTime().ToString('o')}|Out-Null;$events=Get-WindowsSecurityEvents;if($events.Count -gt 0){Send-PNGeeTelemetry '/api/v1/telemetry/events' $events|Out-Null};Write-Host '[+] Telemetry cycle dispatched.' -ForegroundColor Green}
+if($Once){Run-AgentCycle}else{$interval=if($Config.heartbeatSec){[int]$Config.heartbeatSec}else{30};while($true){Run-AgentCycle;Start-Sleep -Seconds $interval}}

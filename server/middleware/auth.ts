@@ -1,96 +1,72 @@
 import { Request, Response, NextFunction } from 'express';
-import { db } from '../db/store';
+import { withSecurityContext } from '../db/postgres';
+import { verifyAccessToken } from '../services/authService';
 import { User, UserRole } from '../../src/types';
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: User;
+      targetOrgId?: string;
+    }
+  }
+}
 
 export interface AuthenticatedRequest extends Request {
   user?: User;
   targetOrgId?: string;
 }
 
-export function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  // Extract user ID from header or Authorization Bearer token or cookie
-  const authHeader = req.headers['authorization'];
-  const userIdHeader = (req.headers['x-user-id'] as string) || (req.query.userId as string);
-  
-  let user: User | undefined;
+function mapUser(row: any): User {
+  return {
+    id: row.id, organizationId: row.organization_id, name: row.name, email: row.email,
+    role: row.role, avatarUrl: row.avatar_url || undefined, phone: row.phone || undefined,
+    mfaEnabled: Boolean(row.mfa_enabled), status: row.status,
+    lastLoginAt: row.last_login_at || undefined, lastLoginIp: row.last_login_ip || undefined,
+    createdAt: row.created_at,
+  };
+}
 
-  if (userIdHeader) {
-    user = db.users.find(u => u.id === userIdHeader && u.status === 'ACTIVE');
-  } else if (authHeader && authHeader.startsWith('Bearer ')) {
-    const token = authHeader.substring(7);
-    // Support token formatted as `token_<userId>` or direct user lookup
-    const foundUserId = token.startsWith('token_') ? token.replace('token_', '') : token;
-    user = db.users.find(u => (u.id === foundUserId || u.email === token) && u.status === 'ACTIVE');
-  }
+const globalRoles: UserRole[] = ['PNGEE_SUPER_ADMIN', 'PNGEE_SECURITY_ANALYST', 'STK_SUPER_ADMIN', 'STK_SECURITY_ANALYST'];
 
-  // Fallback to Super Admin ONLY in development/demo mode for local UI sandbox testing
-  if (!user && db.appMode !== 'production') {
-    user = db.users.find(u => u.role === 'PNGEE_SUPER_ADMIN');
-  }
-
-  if (!user) {
-    res.status(401).json({
-      error: 'Unauthorized',
-      message: 'Valid authentication credentials required. Unauthenticated access prohibited in production mode.'
-    });
-    return;
-  }
-
-  req.user = user;
-
-  // Determine requested Organization context
-  const requestedOrg = (req.query.orgId as string) || (req.body?.organizationId as string) || (req.params?.orgId as string);
-
-  // If user is a Customer Admin or Customer User, they are strictly locked to their own organization
-  if (user.role === 'CUSTOMER_ADMIN' || user.role === 'CUSTOMER_USER') {
-    if (requestedOrg && requestedOrg !== user.organizationId && requestedOrg !== 'current') {
-      res.status(403).json({
-        error: 'Forbidden',
-        message: 'Tenant Isolation Violation: You are not authorized to access data outside your assigned organization.'
-      });
-      return;
+export async function authMiddleware(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  try {
+    const header = req.headers.authorization;
+    if (!header?.startsWith('Bearer ')) return void res.status(401).json({ error: 'Unauthorized', message: 'Bearer access token required.' });
+    const claims = await verifyAccessToken(header.slice(7));
+    const userId = claims.payload.sub;
+    if (!userId || typeof userId !== 'string') throw new Error('Missing subject');
+    const role = String(claims.payload.role || '') as UserRole;
+    const organizationId = claims.payload.organizationId == null ? null : String(claims.payload.organizationId);
+    const isGlobalAdmin = globalRoles.includes(role);
+    const result = await withSecurityContext(organizationId, isGlobalAdmin, client => client.query(
+      `SELECT id, organization_id, name, email, role, avatar_url, phone, mfa_enabled, status, last_login_at, last_login_ip, created_at FROM users WHERE id = $1 AND status = 'ACTIVE'`, [userId]));
+    const row = result.rows[0];
+    if (!row) return void res.status(401).json({ error: 'Unauthorized', message: 'User is disabled or no longer exists.' });
+    if (String(row.role) !== role || String(row.organization_id ?? '') !== String(organizationId ?? '')) {
+      return void res.status(401).json({ error: 'Unauthorized', message: 'Access token is no longer valid.' });
     }
-    req.targetOrgId = user.organizationId;
-  } else {
-    // PNGee Staff can access any org or 'all'
-    req.targetOrgId = requestedOrg || 'all';
+    req.user = mapUser(row);
+    const requestedOrg = (req.query.orgId as string) || (req.body?.organizationId as string) || (req.params?.orgId as string);
+    if (!isGlobalAdmin) {
+      if (requestedOrg && requestedOrg !== req.user.organizationId && requestedOrg !== 'current') return void res.status(403).json({ error: 'Forbidden', message: 'Cross-tenant access denied.' });
+      req.targetOrgId = req.user.organizationId;
+    } else req.targetOrgId = requestedOrg || 'all';
+    next();
+  } catch {
+    res.status(401).json({ error: 'Unauthorized', message: 'Invalid or expired access token.' });
   }
-
-  next();
 }
 
 export function requireRoles(allowedRoles: UserRole[]) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    if (!req.user) {
-      res.status(403).json({
-        error: 'Forbidden',
-        message: 'Authentication required.'
-      });
-      return;
-    }
-
-    // Expand allowed roles to match both PNGEE and STK aliases
-    const expandedAllowed = [...allowedRoles];
-    if (allowedRoles.includes('PNGEE_SUPER_ADMIN') && !allowedRoles.includes('STK_SUPER_ADMIN')) {
-      expandedAllowed.push('STK_SUPER_ADMIN');
-    }
-    if (allowedRoles.includes('STK_SUPER_ADMIN') && !allowedRoles.includes('PNGEE_SUPER_ADMIN')) {
-      expandedAllowed.push('PNGEE_SUPER_ADMIN');
-    }
-    if (allowedRoles.includes('PNGEE_SECURITY_ANALYST') && !allowedRoles.includes('STK_SECURITY_ANALYST')) {
-      expandedAllowed.push('STK_SECURITY_ANALYST');
-    }
-    if (allowedRoles.includes('STK_SECURITY_ANALYST') && !allowedRoles.includes('PNGEE_SECURITY_ANALYST')) {
-      expandedAllowed.push('PNGEE_SECURITY_ANALYST');
-    }
-
-    if (!expandedAllowed.includes(req.user.role)) {
-      res.status(403).json({
-        error: 'Forbidden',
-        message: `Insufficient permissions. Requires one of: ${allowedRoles.join(', ')}`
-      });
-      return;
-    }
+    if (!req.user) return void res.status(401).json({ error: 'Unauthorized' });
+    const expanded = new Set(allowedRoles);
+    if (expanded.has('PNGEE_SUPER_ADMIN')) expanded.add('STK_SUPER_ADMIN');
+    if (expanded.has('STK_SUPER_ADMIN')) expanded.add('PNGEE_SUPER_ADMIN');
+    if (expanded.has('PNGEE_SECURITY_ANALYST')) expanded.add('STK_SECURITY_ANALYST');
+    if (expanded.has('STK_SECURITY_ANALYST')) expanded.add('PNGEE_SECURITY_ANALYST');
+    if (!expanded.has(req.user.role)) return void res.status(403).json({ error: 'Forbidden', message: `Insufficient permissions. Requires one of: ${allowedRoles.join(', ')}` });
     next();
   };
 }

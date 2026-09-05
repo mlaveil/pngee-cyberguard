@@ -1,0 +1,19 @@
+[Unit]
+Description=PNGee CyberGuard PostgreSQL backup cycle
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cyberguard
+Group=cyberguard
+WorkingDirectory=/opt/pngee-cyberguard
+EnvironmentFile=/etc/pngee-cyberguard/backup.env
+EnvironmentFile=/etc/pngee-cyberguard/app.env
+ExecStart=/usr/bin/env bash /opt/pngee-cyberguard/scripts/production-backup.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pngee/storage/backups
